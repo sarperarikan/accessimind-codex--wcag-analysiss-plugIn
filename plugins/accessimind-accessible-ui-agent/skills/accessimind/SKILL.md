@@ -428,6 +428,8 @@ This skill must be able to produce a non-technical or semi-technical executive s
 
 When the user asks for a report, audit deliverable, handoff artifact, stakeholder-ready output, or accessibility analyst output, generate a professional HTML report by default unless the user explicitly asks for another format.
 
+If a reusable report file is being generated, apply the bundled default template contract at `templates/default-html-audit-report.md`. That template contract is the minimum structure for stakeholder-ready reports; do not collapse it to a short summary when raw audit data, screenshots, keyboard traces, screen-reader logs, or visual measurements exist.
+
 ### HTML report audience
 
 Write the HTML report for:
@@ -1051,7 +1053,7 @@ reports/<audit-label>-YYYY-MM-DD.html
 
 Examples:
 - `reports/swiper-accessibility-review-2026-04-02.html`
-- `reports/arcelik-social-links-live-audit-2026-04-02.html`
+- `reports/example-social-links-live-audit-2026-04-02.html`
 - `reports/domain-audit-2026-04-02.html`
 
 ### Naming rules for default report files
@@ -1092,7 +1094,7 @@ At minimum:
 - re-read the file as UTF-8
 - check that representative strings such as Turkish labels or page titles are preserved
 - explicitly verify static report strings as well as crawled page data, because a report can contain correct page titles while the report shell itself is corrupted
-- verify at least the report `<title>`, the main `<h1>`, and one paragraph or heading containing Turkish characters such as `Arçelik`, `erişilebilirlik`, `çok sayfalı`, or equivalent locale-specific text
+- verify at least the report `<title>`, the main `<h1>`, and one paragraph or heading containing Turkish characters such as `erişilebilirlik`, `çok sayfalı`, `çözüm`, or equivalent locale-specific text
 - if verification fails, rewrite the report through a safer UTF-8 path before considering the task complete
 
 ### Completion rule for report encoding
@@ -1996,8 +1998,8 @@ Good message shape:
 - optional quantity or cart count
 
 Example:
-- `Arcelik 270475 MB sepete eklendi. Sepette 2 ürün var.`
-- `Arcelik 270475 MB added to cart. Cart now contains 2 items.`
+- `Example product sepete eklendi. Sepette 2 ürün var.`
+- `Example product added to cart. Cart now contains 2 items.`
 
 ### Compare-list implementation rule
 
@@ -3631,6 +3633,18 @@ Each check must be written as deterministic `step -> expected result`.
 ## Playwright integration mode
 
 This skill is integrated with the `playwright` skill for runtime evidence collection.
+
+## Bundled agentic audit scripts
+
+For live-site audits, prefer the bundled generic scripts over site-specific one-off scripts:
+
+- `scripts/agentic_wcag_audit.mjs` for URL-seeded same-origin crawl, axe, DOM, keyboard, focus, contrast, target-size, mobile reflow, and screenshot evidence.
+- `scripts/build_accessibility_report.mjs` for reusable HTML report generation from `audit-data.json` plus optional NVDA JSON.
+- `scripts/nvda_web_audit.mjs` for real NVDA and natural screen-reader navigation evidence.
+- `scripts/low_vision_web_audit.mjs` for zoom, text spacing, forced-colors, contrast, focus, and reflow measurements.
+- `scripts/motor_web_audit.mjs` for target size, pointer actionability, keyboard trace, dense controls, and drag/precision risks.
+
+Do not create brand-specific audit scripts for a public plugin or GitHub repository. If a target site needs special handling, pass it as runtime configuration or record it as an output artifact outside the plugin source.
 
 ### Integration trigger
 
