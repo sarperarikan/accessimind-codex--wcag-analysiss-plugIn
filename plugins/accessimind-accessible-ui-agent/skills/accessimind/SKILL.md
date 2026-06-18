@@ -1596,6 +1596,7 @@ When a live site uses CDN, WAF, bot protection, rate limiting, authentication, o
 - prefer staging, QA, allowlisted production test profiles, or documented read-only production windows
 - keep concurrency low and pace navigation and interactions with explicit delays and request budgets
 - prefer progressive same-session navigation: load the entry page, allow it to settle, discover links, click visible links when possible, and use direct URL loading only as a fallback
+- when protected production pages still return `403` or an access-control page, switch to an authorized access source: existing Chrome CDP session, dedicated persistent test profile, current-page audit, staging URL, allowlisted route, or manual handoff in a visible browser
 - respect configured scope: same origin, path prefixes, page limits, depth limits, and user-provided URL lists
 - stop or mark evidence as blocked when a CAPTCHA, login wall, WAF block page, or rate-limit page appears
 - ask for a staging URL, allowlisted route, test credentials, or written authorization when production protection prevents evidence collection
@@ -3657,6 +3658,7 @@ Recommended generic live-site sequence:
 
 1. Generate `audit-plan.json` with `create_audit_plan.mjs`.
 2. Run `agentic_wcag_audit.mjs` with the plan and safe pacing defaults; for protected live sites, keep `humanNavigation` enabled and prefer headed mode.
+   - If the protected site still blocks direct automation, use `--cdpUrl`, `--userDataDir`, `--auditCurrentPage true`, or `--manualHandoffOnBlock true` with an authorized test session.
 3. Add `agentic_task_runner.mjs` and `state_diff_audit.mjs` evidence for realistic expert workflows.
 4. Add NVDA, low-vision, and motor-access evidence when the environment supports it.
 5. Build `evidence-bundle.json` with `evidence_bundle_builder.mjs`.

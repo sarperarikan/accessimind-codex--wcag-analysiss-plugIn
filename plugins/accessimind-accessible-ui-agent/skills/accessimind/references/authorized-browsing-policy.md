@@ -13,6 +13,7 @@ Use this policy for live-site audits where CDN, WAF, bot protection, rate limiti
 - Report blocked states as audit limitations, not accessibility defects.
 - Ask for an allowlisted test route, credentials, or staging URL when production protection prevents evidence collection.
 - Keep user actions safe: navigation, focus, typing harmless test values, opening disclosures, and closing dialogs.
+- Use an existing authorized Chrome session, dedicated test profile, current-page audit, or manual handoff when normal production access requires a real human/browser session.
 
 ## Not Allowed
 
@@ -22,6 +23,7 @@ Use this policy for live-site audits where CDN, WAF, bot protection, rate limiti
 - Do not rotate IPs, proxies, fingerprints, user agents, cookies, or browser identities to avoid detection.
 - Do not brute-force, credential-stuff, submit purchases, create accounts, alter real user data, or trigger destructive flows.
 - Do not present WAF-blocked automation results as proof that the page itself is inaccessible to users.
+- Do not use authorized-session support to access pages outside the approved audit scope.
 
 ## Recommended Runtime Defaults
 
@@ -31,6 +33,8 @@ Use this policy for live-site audits where CDN, WAF, bot protection, rate limiti
 - `sameOriginOnly`: true
 - `stopOnBlockPage`: true
 - `headless`: allowed for staging or non-protected targets; use headed mode when visual/manual evidence is needed
+- `manualHandoffOnBlock`: true only when an authorized human can complete normal access in the visible browser
+- `auditCurrentPage`: true when the target page is already open in an authorized browser session
 
 ## Reporting Requirements
 

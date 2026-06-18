@@ -19,6 +19,7 @@ AccessiMind is a general-purpose, agentic WCAG audit and accessibility implement
 - Supports accessibility implementation and review for React, HTML, CSS, JavaScript, Codex plugin UI, and live web pages.
 - Uses an authorized, low-impact browsing policy for protected production targets; it reports WAF, CAPTCHA, login, and rate-limit blocks as limitations instead of attempting bypass.
 - Uses progressive same-session navigation by default for live audits: slow initial settling, paced requests, visible-link clicks when possible, and direct URL fallback only when normal navigation cannot reach the page.
+- Supports authorized access continuity for protected sites through existing Chrome CDP sessions, persistent test profiles, current-page auditing, and manual handoff when a human must complete normal access.
 
 ## Install
 
@@ -100,6 +101,13 @@ Recommended generic sequence:
 ## Authorized Browsing Policy
 
 Protected live targets must be tested only with authorization. The plugin defaults to same-origin scope, low concurrency, slow pacing, same-session navigation, visible-link clicks when possible, and stop-on-block behavior. It does not include WAF evasion, CAPTCHA bypass, stealth plugins, proxy rotation, browser fingerprint rotation, destructive form submission, account creation, purchasing, or credential attacks.
+
+For protected production sites, use an authorized access source instead of trying to force direct automation:
+
+- `--cdpUrl http://127.0.0.1:9222` connects to a Chrome session that the site owner has opened for testing.
+- `--userDataDir <path>` uses a dedicated allowlisted/staging test profile.
+- `--auditCurrentPage true` audits the currently open authorized page instead of reloading it.
+- `--manualHandoffOnBlock true` waits in a visible browser when normal access requires a human step, then audits the page only after it is reachable.
 
 The detailed policy is bundled at:
 

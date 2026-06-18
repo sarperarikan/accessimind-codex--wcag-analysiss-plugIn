@@ -59,6 +59,11 @@ const plan = {
     maxRequestsPerMinute: Number(args.maxRequestsPerMinute || 12),
     maxConcurrency: 1,
     humanNavigation: args.humanNavigation !== "false",
+    cdpUrl: args.cdpUrl || "",
+    userDataDir: args.userDataDir || "",
+    auditCurrentPage: args.auditCurrentPage === "true",
+    manualHandoffOnBlock: args.manualHandoffOnBlock === "true",
+    manualTimeoutMs: Number(args.manualTimeoutMs || 180000),
     stopOnBlockPage: args.stopOnBlockPage !== "false",
   },
   environment: {

@@ -24,6 +24,11 @@ const interactionDelayMs = Number(args.interactionDelayMs || auditPlan?.safeBrow
 const initialSettleMs = Number(args.initialSettleMs || auditPlan?.safeBrowsing?.initialSettleMs || 5000);
 const maxRequestsPerMinute = Number(args.maxRequestsPerMinute || auditPlan?.safeBrowsing?.maxRequestsPerMinute || 12);
 const humanNavigation = args.humanNavigation !== "false";
+const cdpUrl = args.cdpUrl || auditPlan?.safeBrowsing?.cdpUrl || "";
+const userDataDir = args.userDataDir || auditPlan?.safeBrowsing?.userDataDir || "";
+const auditCurrentPage = args.auditCurrentPage === "true";
+const manualHandoffOnBlock = args.manualHandoffOnBlock === "true" || auditPlan?.safeBrowsing?.manualHandoffOnBlock === true;
+const manualTimeoutMs = Number(args.manualTimeoutMs || auditPlan?.safeBrowsing?.manualTimeoutMs || 180000);
 const runId = `agentic-wcag-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 const seed = new URL(seedUrl);
 const sameOriginOnly = args.sameOrigin !== "false";
@@ -51,6 +56,10 @@ const result = {
     initialSettleMs,
     maxRequestsPerMinute,
     humanNavigation,
+    browserConnection: cdpUrl ? "cdp" : userDataDir ? "persistent-profile" : "managed-playwright",
+    auditCurrentPage,
+    manualHandoffOnBlock,
+    manualTimeoutMs,
     auditPlan: auditPlanPath,
     wafSafeMode: true,
   },
@@ -69,15 +78,19 @@ const result = {
 };
 
 let browser;
+let browserContext;
+let closeRuntime = async () => {};
 
 try {
-  browser = await launchBrowser();
-  const context = await browser.newContext({
-    locale,
-    viewport: { width: 1440, height: 1000 },
-  });
+  const runtime = await createBrowserRuntime();
+  browser = runtime.browser;
+  browserContext = runtime.context;
+  closeRuntime = runtime.close;
+  const context = browserContext;
 
-  if (humanNavigation && explicitUrls.length === 0) {
+  if (auditCurrentPage) {
+    await auditCurrentOpenPage(context);
+  } else if (humanNavigation && explicitUrls.length === 0) {
     await crawlAndAuditProgressively(context);
   } else {
     const selected = await crawlUrls(context);
@@ -95,11 +108,25 @@ try {
 } catch (error) {
   result.error = error?.stack || error?.message || String(error);
 } finally {
-  if (browser) await browser.close().catch(() => {});
+  await closeRuntime().catch(() => {});
   const outPath = path.join(outDir, "audit-data.json");
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
   console.log(outPath);
   if (result.error) process.exitCode = 1;
+}
+
+async function auditCurrentOpenPage(context) {
+  const pages = context.pages();
+  const page = pages.find((candidate) => /^https?:\/\//.test(candidate.url())) || pages[0] || await context.newPage();
+  if (!/^https?:\/\//.test(page.url())) {
+    await page.goto(seedUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await humanPause(initialSettleMs);
+  }
+  const currentUrl = page.url();
+  const target = { kind: "current-page", url: normalizeUrl(currentUrl), depth: 0, source: "connected-browser" };
+  result.selectedUrls.push(target);
+  const label = `01-${safeSlug(new URL(currentUrl).pathname || "current") || "current"}`;
+  result.pages.push(await auditPage(page, target, label, { skipNavigation: true }));
 }
 
 async function crawlUrls(context) {
@@ -210,7 +237,7 @@ async function recoverToSourceAfterBlockedNavigation(page, sourceUrl, pageResult
   }
 }
 
-async function auditPage(page, target, label) {
+async function auditPage(page, target, label, options = {}) {
   const pageResult = {
     ...target,
     startedAt: new Date().toISOString(),
@@ -230,7 +257,7 @@ async function auditPage(page, target, label) {
   };
 
   try {
-    const response = await navigateForAudit(page, target, pageResult);
+    const response = options.skipNavigation ? null : await navigateForAudit(page, target, pageResult);
     pageResult.status = response?.status() || null;
     await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {
       pageResult.limitations.push("networkidle timeout; continued with loaded DOM.");
@@ -240,6 +267,12 @@ async function auditPage(page, target, label) {
     pageResult.finalUrl = page.url();
     pageResult.title = await page.title();
     pageResult.blocked = await isBlocked(page);
+    if (pageResult.blocked && manualHandoffOnBlock && !headless) {
+      await waitForManualAccess(page, pageResult);
+      pageResult.finalUrl = page.url();
+      pageResult.title = await page.title();
+      pageResult.blocked = await isBlocked(page);
+    }
 
     const screenshotPath = path.join(outDir, `${label}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true }).catch((error) => {
@@ -273,6 +306,28 @@ async function auditPage(page, target, label) {
   }
 
   return pageResult;
+}
+
+async function waitForManualAccess(page, pageResult) {
+  const started = Date.now();
+  pageResult.manualHandoff = {
+    startedAt: new Date(started).toISOString(),
+    timeoutMs: manualTimeoutMs,
+    reason: "blocked-page",
+    resolved: false,
+  };
+  console.error(`[accessimind] Manual handoff: ${page.url()} appears blocked. Use the visible browser to complete authorized access or navigate to an allowed test page. Waiting ${manualTimeoutMs}ms.`);
+  while (Date.now() - started < manualTimeoutMs) {
+    await humanPause(2500);
+    if (!await isBlocked(page)) {
+      pageResult.manualHandoff.resolved = true;
+      pageResult.manualHandoff.finishedAt = new Date().toISOString();
+      pageResult.manualHandoff.finalUrl = page.url();
+      return;
+    }
+  }
+  pageResult.manualHandoff.finishedAt = new Date().toISOString();
+  pageResult.limitations.push(`Manual handoff timed out after ${manualTimeoutMs}ms; page remained blocked.`);
 }
 
 async function navigateForAudit(page, target, pageResult) {
@@ -581,6 +636,53 @@ async function dismissCommonOverlays(page) {
 async function isBlocked(page) {
   const text = await page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
   return /Access Denied|Request blocked|Forbidden|AkamaiGHost|You don't have permission to access/i.test(text.slice(0, 2000));
+}
+
+async function createBrowserRuntime() {
+  if (cdpUrl) {
+    const connected = await chromium.connectOverCDP(cdpUrl);
+    const context = connected.contexts()[0] || await connected.newContext({
+      locale,
+      viewport: { width: 1440, height: 1000 },
+    });
+    return {
+      browser: connected,
+      context,
+      close: async () => {
+        await connected.close().catch(() => {});
+      },
+    };
+  }
+
+  if (userDataDir) {
+    const context = await chromium.launchPersistentContext(path.resolve(userDataDir), {
+      channel: browserChannel,
+      headless: false,
+      locale,
+      viewport: { width: 1440, height: 1000 },
+      args: ["--disable-notifications", "--disable-features=CalculateNativeWinOcclusion"],
+    });
+    return {
+      browser: null,
+      context,
+      close: async () => {
+        await context.close().catch(() => {});
+      },
+    };
+  }
+
+  const launched = await launchBrowser();
+  const context = await launched.newContext({
+    locale,
+    viewport: { width: 1440, height: 1000 },
+  });
+  return {
+    browser: launched,
+    context,
+    close: async () => {
+      await launched.close().catch(() => {});
+    },
+  };
 }
 
 async function launchBrowser() {
