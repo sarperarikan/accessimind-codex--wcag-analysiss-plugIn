@@ -1,29 +1,32 @@
 {
   "name": "accessimind-accessible-ui-agent",
   "version": "0.1.0+codex.20260618071751",
-  "description": "General-purpose agentic WCAG 2.2 audit, evidence collection, screen-reader testing, and accessible UI implementation workflows.",
+  "description": "General-purpose agentic WCAG 2.2 audit, WCAG-EM planning, authorized browsing, evidence collection, screen-reader testing, and accessible UI implementation workflows.",
   "author": {
     "name": "AccessiMind"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "AccessiMind Accessible UI Agent",
-    "shortDescription": "Agentic WCAG audits, crawler evidence, NVDA testing, accessible reports, and UI remediation.",
-    "longDescription": "AccessiMind Accessible UI Agent turns Codex into a general accessibility audit and remediation agent. It can crawl from a seed URL, collect WCAG 2.2 evidence with browser automation, keyboard traversal, visual measurements, target-size checks, and real NVDA screen-reader output when available, then generate detailed HTML reports, Jira-ready work, regression packs, and accessible UI fixes. Invoke the bundled skill with $accessimind.",
+    "shortDescription": "Agentic WCAG audits, WCAG-EM planning, authorized browsing, NVDA testing, evidence bundles, and UI remediation.",
+    "longDescription": "AccessiMind Accessible UI Agent turns Codex into a general accessibility audit and remediation agent. It can create WCAG-EM inspired plans, crawl from a seed URL, run authorized low-impact browser evidence collection, inspect keyboard flows, visual measurements, target-size checks, state changes, task-based expert workflows, and real NVDA screen-reader output when available, then generate evidence bundles, detailed HTML reports, Jira-ready work, regression packs, and accessible UI fixes. Invoke the bundled skill with $accessimind.",
     "developerName": "AccessiMind",
     "category": "Productivity",
     "capabilities": [
       "Accessibility",
       "Agentic Audit",
+      "WCAG-EM Planning",
+      "Authorized Browsing",
       "Reporting",
       "Implementation",
       "Screen Reader",
-      "Crawler Evidence"
+      "Crawler Evidence",
+      "Evidence Bundles"
     ],
     "defaultPrompt": [
-      "Run an agentic WCAG audit from this URL.",
-      "Create an evidence-backed WCAG HTML report.",
-      "Test this flow with keyboard and a screen reader."
+      "Create a WCAG-EM inspired audit plan for this URL.",
+      "Run an authorized, low-impact agentic WCAG audit from this URL.",
+      "Create an evidence-backed WCAG HTML report with task, state, keyboard, visual, and screen-reader evidence."
     ]
   }
 }

@@ -1588,77 +1588,81 @@ interpret that as a request to wire and prefer a secondary local browser automat
 
 This integration improves coverage but does not guarantee bypass of third-party CDN, WAF, or anti-bot defenses. If the live site still returns an access-block page under the secondary browser path, report that truthfully and continue with the strongest remaining evidence path.
 
-### WAF mitigation strategy rule
+### Authorized browsing and WAF-safe audit rule
 
-When a live site returns a CDN/WAF block page under default automation settings, this skill may attempt a small, truthful set of compatibility-oriented browser/session strategies before giving up:
+When a live site uses CDN, WAF, bot protection, rate limiting, authentication, or production safety controls, this skill must stay inside an authorized, low-impact audit model:
 
-- try a mainstream installed browser channel such as Chrome or Edge instead of a bundled default
-- set a realistic Windows browser user agent for the selected channel
-- set locale and language headers that match the expected market, such as `tr-TR` and `Accept-Language: tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7` for Turkish market sites
-- use a fresh context and, if needed, a persistent user-writable context directory
-- compare headless and headed behavior when the environment allows it
-- wait for `domcontentloaded` first, then for a short stabilization period before concluding the page is blocked
+- audit only targets that the user owns, operates, or is authorized to test
+- prefer staging, QA, allowlisted production test profiles, or documented read-only production windows
+- keep concurrency low and pace navigation and interactions with explicit delays and request budgets
+- respect configured scope: same origin, path prefixes, page limits, depth limits, and user-provided URL lists
+- stop or mark evidence as blocked when a CAPTCHA, login wall, WAF block page, or rate-limit page appears
+- ask for a staging URL, allowlisted route, test credentials, or written authorization when production protection prevents evidence collection
 
-These are compatibility and rendering strategies, not stealth guarantees. Do not claim universal bypass behavior.
+Do not bypass or evade security controls. Do not mask `navigator.webdriver`, use stealth plugins, rotate proxies, rotate browser fingerprints, rotate user agents, bypass CAPTCHA, brute-force credentials, submit purchases, create accounts, alter real user data, or trigger destructive flows.
 
-### WAF mitigation reporting rule
+For this skill, "human-like" means methodologically realistic: task-based navigation, reasonable pauses, visible browser interaction when needed, keyboard routes, screen-reader routes, harmless form/error exploration, and stopping at access-control boundaries.
 
-If these strategies are attempted, report:
-- which combinations were tried
-- which combination returned a real page versus a block page
-- whether the working result came from rendered browser evidence or source-only evidence
-- whether the result appears stable enough for accessibility review
+### Authorized browsing reporting rule
 
-### Site-specific access strategy rule
+Every live-site report should state:
+- authorization assumption
+- target scope
+- page/depth limits
+- pacing and concurrency settings
+- whether any WAF, CAPTCHA, login, or rate-limit page was encountered
+- which evidence was collected and which surfaces remain unverified
+- whether any blocked result is an audit limitation rather than an accessibility defect
+
+### Site-specific access limitation rule
 
 When live-site evaluation is blocked, unstable, or only partially reachable, this skill should not treat all sites the same.
 
-It must determine the most likely access-limitation pattern first, then choose a matching strategy.
+It must determine the most likely access-limitation pattern first, then choose the safest authorized evidence path.
 
 Common access-limitation patterns include:
 - CDN or WAF block pages
 - market or locale-sensitive delivery
-- referer-sensitive routing
-- session-sensitive or cookie-gated rendering
+- session-sensitive, consent-gated, or cookie-gated rendering
 - login-gated pages
-- bot-sensitive dynamic pages that differ between source and rendered DOM
+- protected dynamic pages that differ between source and rendered DOM
 - rate-limited or intermittently blocked paths
 
-### Site-specific strategy selection workflow
+### Site-specific limitation workflow
 
-Before escalating or giving up, evaluate:
+Before escalating or giving up, evaluate without bypassing access controls:
 1. Is the block global to the domain or only on specific paths?
 2. Does the homepage work while deep links fail?
-3. Does changing browser channel affect the result?
-4. Does locale or `Accept-Language` affect the result?
-5. Does adding a same-site referer affect the result?
-6. Does a fresh isolated session behave differently from a reused session?
+3. Is the page reachable in a normal visible browser session under the user's authorized profile?
+4. Is the requested locale or market route within the stated audit scope?
+5. Is the page behind login, consent, age gate, CAPTCHA, WAF, or rate limit?
+6. Is a staging URL, allowlist, or test credential required for valid evidence?
 7. Is the site reachable in rendered form but not through raw fetch?
 
-Then choose the smallest strategy set that fits the observed pattern.
+Then choose the least intrusive evidence path that fits the observed pattern.
 
-### Strategy matrix
+### Evidence-path matrix
 
-Use these strategy families depending on the site behavior:
+Use these evidence paths depending on the site behavior:
 
 - WAF-like block:
-  - try real installed browser channels
-  - try market-appropriate locale and language headers
-  - try same-site referer
-  - use fresh isolated contexts
+  - stop automated crawling for the blocked path
+  - report the blocked state and exact URL/status/text evidence
+  - request staging, allowlisting, or a documented read-only test window
+  - continue only with user-authorized accessible paths or source artifacts
 
 - Homepage works, deep pages fail:
-  - test deep pages with same-site referer
-  - test route entry by navigating from the homepage versus direct URL load
+  - test route entry through normal visible navigation when authorized
   - treat deep-link blocks as path-sensitive access behavior, not full-domain failure
 
 - Market-sensitive content:
-  - align locale, language headers, and browser region expectations with the site market
-  - report the market profile used for successful access
+  - use the user-provided market URL, locale, and scope
+  - report the configured market profile used for evidence
 
 - Session-sensitive pages:
-  - compare fresh session versus reused session
-  - preserve the session that produces stable access for the audit batch
+  - use only authorized test sessions or credentials
+  - do not reuse personal or unrelated user sessions without explicit instruction
+  - report when authentication remains unavailable
 
 - Login-gated content:
   - do not fake authenticated access
@@ -1668,16 +1672,17 @@ Use these strategy families depending on the site behavior:
   - prefer rendered DOM evidence over raw fetch
   - report source-only findings separately when rendering cannot be verified
 
-### Domain memory rule
+### Authorized access profile rule
 
-When a site-specific strategy works for a domain, this skill should be able to remember and reuse that pattern in future runs, such as:
-- preferred browser channel
-- working locale
-- working `Accept-Language`
-- whether referer is needed
-- whether fresh sessions are more reliable than reused sessions
+When an authorized audit profile is provided for a domain, this skill should be able to reuse that pattern in future runs, such as:
+- staging or production scope
+- allowed URL prefixes
+- page and request limits
+- configured locale
+- authorized test credentials or profile notes
+- known consent/login boundaries
 
-This remembered pattern should be treated as a domain-specific access profile, not as a universal browser rule.
+This remembered pattern should be treated as a domain-specific audit profile, not as a universal browser rule and not as a bypass recipe.
 
 ### Access profile example
 
@@ -1685,25 +1690,24 @@ The skill should be able to reason in a profile shape like:
 
 ```text
 Domain: www.example.com
-Preferred browser: Edge
+Environment: staging
 Locale: tr-TR
-Accept-Language: tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7
-Referer needed: yes
-Fresh isolated session: yes
-Direct deep-link load: unstable
-Homepage-first navigation: preferred
+Allowed scope: https://www.example.com/tr/
+Pacing: 1500 ms, 20 requests/minute
+Credentials: authorized test account, read-only
+Known boundaries: checkout submission is out of scope
 ```
 
 Equivalent natural-language reasoning is also valid.
 
-### Reporting rule for site-specific strategies
+### Reporting rule for authorized access profiles
 
-When a domain-specific access strategy is chosen, report:
+When a domain-specific audit profile is used, report:
 - the block pattern that was observed
-- the selected strategy
-- whether the strategy was successful
+- the authorized scope and pacing profile
+- whether the evidence path was successful
 - whether the result is stable enough for a multi-page accessibility review
-- what remained unreachable despite the strategy
+- what remained unreachable despite the authorized profile
 
 ## Production UI principles
 
@@ -3638,11 +3642,24 @@ This skill is integrated with the `playwright` skill for runtime evidence collec
 
 For live-site audits, prefer the bundled generic scripts over site-specific one-off scripts:
 
+- `scripts/create_audit_plan.mjs` for WCAG-EM inspired scope planning, representative page/user-flow selection, safe browsing policy, and evidence-track configuration.
 - `scripts/agentic_wcag_audit.mjs` for URL-seeded same-origin crawl, axe, DOM, keyboard, focus, contrast, target-size, mobile reflow, and screenshot evidence.
+- `scripts/agentic_task_runner.mjs` for non-destructive task-based browsing evidence across orientation, navigation, search/filter, form/error, and dynamic-content flows.
+- `scripts/state_diff_audit.mjs` for accessible name/role/state/relationship diffs before and after activating controls.
+- `scripts/evidence_bundle_builder.mjs` for combining audit, NVDA, task, and state-diff artifacts into a replayable evidence bundle.
 - `scripts/build_accessibility_report.mjs` for reusable HTML report generation from `audit-data.json` plus optional NVDA JSON.
 - `scripts/nvda_web_audit.mjs` for real NVDA and natural screen-reader navigation evidence.
 - `scripts/low_vision_web_audit.mjs` for zoom, text spacing, forced-colors, contrast, focus, and reflow measurements.
 - `scripts/motor_web_audit.mjs` for target size, pointer actionability, keyboard trace, dense controls, and drag/precision risks.
+
+Recommended generic live-site sequence:
+
+1. Generate `audit-plan.json` with `create_audit_plan.mjs`.
+2. Run `agentic_wcag_audit.mjs` with the plan and safe pacing defaults.
+3. Add `agentic_task_runner.mjs` and `state_diff_audit.mjs` evidence for realistic expert workflows.
+4. Add NVDA, low-vision, and motor-access evidence when the environment supports it.
+5. Build `evidence-bundle.json` with `evidence_bundle_builder.mjs`.
+6. Generate the HTML report with `build_accessibility_report.mjs`.
 
 Do not create brand-specific audit scripts for a public plugin or GitHub repository. If a target site needs special handling, pass it as runtime configuration or record it as an output artifact outside the plugin source.
 
@@ -3814,6 +3831,7 @@ Do not omit these points even when the user asks for a short answer.
 
 Load [official-sources.md](references/official-sources.md) when you need the standards, techniques, and rationale behind the rules in this skill.
 Load [wcag-2-2-coverage-map.md](references/wcag-2-2-coverage-map.md) when you need a practical criterion-to-surface review map for complete WCAG 2.2 A/AA coverage.
+Load [authorized-browsing-policy.md](references/authorized-browsing-policy.md) when a live-site audit may involve CDN, WAF, bot protection, rate limiting, authentication, or production safety controls.
 
 
 

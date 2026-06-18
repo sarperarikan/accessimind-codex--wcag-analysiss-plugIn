@@ -10,16 +10,21 @@ const axe = requireFromCwd("axe-core");
 
 const args = parseArgs(process.argv.slice(2));
 const seedUrl = requiredArg(args, "url");
+const auditPlanPath = args.plan ? path.resolve(args.plan) : null;
+const auditPlan = auditPlanPath && fs.existsSync(auditPlanPath) ? JSON.parse(fs.readFileSync(auditPlanPath, "utf8")) : null;
 const outDir = path.resolve(args.outDir || path.join("reports", safeSlug(new URL(seedUrl).hostname)));
-const pageLimit = Number(args.pages || 10);
-const depthLimit = Number(args.depth || 1);
-const locale = args.locale || "en-US";
+const pageLimit = Number(args.pages || auditPlan?.scope?.pageLimit || 10);
+const depthLimit = Number(args.depth || auditPlan?.scope?.depthLimit || 1);
+const locale = args.locale || auditPlan?.environment?.locale || "en-US";
 const browserChannel = args.channel || "chrome";
 const headless = args.headless === "true";
+const pacingMs = Number(args.pacingMs || auditPlan?.safeBrowsing?.pacingMs || 1200);
+const maxRequestsPerMinute = Number(args.maxRequestsPerMinute || auditPlan?.safeBrowsing?.maxRequestsPerMinute || 20);
 const runId = `agentic-wcag-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 const seed = new URL(seedUrl);
 const sameOriginOnly = args.sameOrigin !== "false";
-const pathPrefix = args.pathPrefix || seed.pathname.replace(/\/[^/]*$/, "/");
+const pathPrefix = args.pathPrefix || auditPlan?.scope?.pathPrefix || seed.pathname.replace(/\/[^/]*$/, "/");
+const explicitUrls = auditPlan?.scope?.urls || [];
 
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -35,6 +40,18 @@ const result = {
     headless,
     sameOriginOnly,
     pathPrefix,
+    pacingMs,
+    maxRequestsPerMinute,
+    auditPlan: auditPlanPath,
+    wafSafeMode: true,
+  },
+  policy: {
+    authorizationRequired: true,
+    stealthOrBypassUsed: false,
+    userAgentSpoofingUsed: false,
+    webdriverMaskingUsed: false,
+    captchaBypassAllowed: false,
+    wafEvasionAllowed: false,
   },
   selectedUrls: [],
   pages: [],
@@ -48,9 +65,7 @@ try {
   const context = await browser.newContext({
     locale,
     viewport: { width: 1440, height: 1000 },
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
   });
-  await context.addInitScript("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });");
 
   const selected = await crawlUrls(context);
   result.selectedUrls = selected;
@@ -74,7 +89,12 @@ try {
 }
 
 async function crawlUrls(context) {
-  const queue = [{ url: normalizeUrl(seedUrl), depth: 0, source: "seed" }];
+  const seededUrls = explicitUrls.length ? explicitUrls : [seedUrl];
+  const queue = seededUrls.map((url, index) => ({
+    url: normalizeUrl(url),
+    depth: 0,
+    source: index === 0 ? "seed" : "audit-plan",
+  }));
   const seen = new Set();
   const selected = [];
 
@@ -88,6 +108,7 @@ async function crawlUrls(context) {
 
     const page = await context.newPage();
     try {
+      await pacedDelay();
       await page.goto(current.url, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
       await dismissCommonOverlays(page);
@@ -130,12 +151,14 @@ async function auditPage(page, target, label) {
   };
 
   try {
+    await pacedDelay();
     const response = await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 60000 });
     pageResult.status = response?.status() || null;
     await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {
       pageResult.limitations.push("networkidle timeout; continued with loaded DOM.");
     });
     await dismissCommonOverlays(page);
+    await pacedDelay();
     pageResult.finalUrl = page.url();
     pageResult.title = await page.title();
     pageResult.blocked = await isBlocked(page);
@@ -421,7 +444,7 @@ async function launchBrowser() {
     return await chromium.launch({
       channel: browserChannel,
       headless,
-      args: ["--disable-notifications", "--disable-features=CalculateNativeWinOcclusion", "--disable-blink-features=AutomationControlled"],
+      args: ["--disable-notifications", "--disable-features=CalculateNativeWinOcclusion"],
     });
   } catch (error) {
     if (browserChannel !== "msedge") {
@@ -429,11 +452,21 @@ async function launchBrowser() {
       return chromium.launch({
         channel: "msedge",
         headless,
-        args: ["--disable-notifications", "--disable-features=CalculateNativeWinOcclusion", "--disable-blink-features=AutomationControlled"],
+        args: ["--disable-notifications", "--disable-features=CalculateNativeWinOcclusion"],
       });
     }
     throw error;
   }
+}
+
+let lastRequestAt = 0;
+async function pacedDelay() {
+  const minimumGap = Math.max(pacingMs, Math.ceil(60000 / Math.max(1, maxRequestsPerMinute)));
+  const elapsed = Date.now() - lastRequestAt;
+  if (elapsed < minimumGap) {
+    await new Promise((resolve) => setTimeout(resolve, minimumGap - elapsed));
+  }
+  lastRequestAt = Date.now();
 }
 
 function prioritizeLinks(links) {

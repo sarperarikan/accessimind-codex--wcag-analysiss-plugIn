@@ -7,12 +7,17 @@ AccessiMind is a general-purpose, agentic WCAG audit and accessibility implement
 ## What It Does
 
 - Runs agentic WCAG 2.2 A/AA audits from a seed URL.
+- Creates WCAG-EM inspired audit plans with scope, representative page types, user flows, evidence tracks, and safe browsing defaults.
 - Crawls same-origin pages with configurable page and depth limits.
 - Collects axe-core, DOM, keyboard, focus, contrast, target-size, mobile reflow, and screenshot evidence.
+- Runs non-destructive task-based browsing flows for orientation, navigation, search/filter, form/error, and dynamic-content checks.
+- Captures accessible name/role/state/relationship diffs before and after control activation.
 - Captures real NVDA screen-reader output on Windows when the runtime is available.
+- Combines scan, task, state, visual, motor, and screen-reader artifacts into replayable evidence bundles.
 - Generates detailed, stakeholder-ready HTML reports from a reusable report template contract.
 - Produces Jira-ready remediation tasks, acceptance criteria, and regression packs.
 - Supports accessibility implementation and review for React, HTML, CSS, JavaScript, Codex plugin UI, and live web pages.
+- Uses an authorized, low-impact browsing policy for protected production targets; it reports WAF, CAPTCHA, login, and rate-limit blocks as limitations instead of attempting bypass.
 
 ## Install
 
@@ -72,11 +77,34 @@ $accessimind convert these accessibility findings into Jira-ready Summary, Descr
 
 These scripts are generic helpers used by the skill when a runtime audit is appropriate:
 
+- `scripts/create_audit_plan.mjs`: WCAG-EM inspired scope, page/user-flow, evidence-track, and safe browsing plan builder.
 - `scripts/agentic_wcag_audit.mjs`: seed URL crawl and browser-backed WCAG evidence collection.
+- `scripts/agentic_task_runner.mjs`: non-destructive task-based browsing evidence for realistic expert workflows.
+- `scripts/state_diff_audit.mjs`: before/after accessible state and controlled-content diff checks.
+- `scripts/evidence_bundle_builder.mjs`: replayable evidence package builder from audit, NVDA, task, and state artifacts.
 - `scripts/build_accessibility_report.mjs`: generic HTML report builder from audit JSON and optional NVDA JSON.
 - `scripts/nvda_web_audit.mjs`: real NVDA traversal and natural navigation evidence.
 - `scripts/low_vision_web_audit.mjs`: zoom, reflow, contrast, text spacing, focus, and forced-colors evidence.
 - `scripts/motor_web_audit.mjs`: keyboard, target-size, pointer actionability, and motor-access evidence.
+
+Recommended generic sequence:
+
+1. Create `audit-plan.json`.
+2. Run the browser-backed WCAG crawl with the plan.
+3. Add task-runner and state-diff artifacts.
+4. Add NVDA, low-vision, and motor-access artifacts when available.
+5. Build `evidence-bundle.json`.
+6. Generate the HTML report.
+
+## Authorized Browsing Policy
+
+Protected live targets must be tested only with authorization. The plugin defaults to same-origin scope, low concurrency, pacing, and stop-on-block behavior. It does not include WAF evasion, CAPTCHA bypass, stealth plugins, proxy rotation, browser fingerprint rotation, destructive form submission, account creation, purchasing, or credential attacks.
+
+The detailed policy is bundled at:
+
+```text
+plugins/accessimind-accessible-ui-agent/skills/accessimind/references/authorized-browsing-policy.md
+```
 
 ## Report Template
 
@@ -93,4 +121,5 @@ Reports should include scope, methodology, evidence package, inspected surfaces,
 - Real NVDA evidence requires Windows, NVDA, and the Guidepup runtime.
 - If screen-reader automation cannot run, the skill reports it as `blocked` or `unverified`.
 - DOM-only findings are not presented as real screen-reader evidence.
+- WAF, CAPTCHA, login, and rate-limit blocks are reported as audit limitations, not as user accessibility defects.
 - Generated HTML reports must themselves be accessible and UTF-8 encoded.
