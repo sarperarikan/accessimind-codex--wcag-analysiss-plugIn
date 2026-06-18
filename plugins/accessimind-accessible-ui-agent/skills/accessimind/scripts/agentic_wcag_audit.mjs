@@ -184,9 +184,9 @@ async function crawlUrls(context) {
 async function crawlAndAuditProgressively(context) {
   const queue = [{ url: normalizeUrl(seedUrl), depth: 0, source: "seed" }];
   const seen = new Set();
-  const page = await context.newPage();
+  let page = await context.newPage();
   let attempted = 0;
-  let fallbackAdded = false;
+  let lastUnblockedPageResult = null;
 
   try {
     while (queue.length && result.pages.length < pageLimit && attempted < maxCandidates) {
@@ -203,23 +203,38 @@ async function crawlAndAuditProgressively(context) {
 
       if (pageResult.blocked && current.depth > 0) {
         result.blockedCandidates.push(pageResult);
-        await recoverToSourceAfterBlockedNavigation(page, current.source, pageResult);
+        const recovered = await recoverToSourceAfterBlockedNavigation(page, current.source, pageResult);
+        if (!recovered) {
+          await page.close().catch(() => {});
+          page = await context.newPage();
+          await page.goto(seedUrl, { waitUntil: "domcontentloaded", timeout: 60000 }).catch((error) => {
+            pageResult.limitations.push(`Fresh source page load failed after blocked navigation: ${error.message}`);
+            return null;
+          });
+          await humanPause(initialSettleMs);
+          await dismissCommonOverlays(page);
+        }
         continue;
       }
 
       result.pages.push(pageResult);
-
-      if (!pageResult.blocked && fallbackSurfaces && !fallbackAdded && maxFallbackSurfaces > 0 && result.pages.length < pageLimit) {
-        const surfaces = await auditFallbackSurfaces(page, pageResult, result.pages.length + 1);
-        result.pages.push(...surfaces.slice(0, Math.max(0, pageLimit - result.pages.length)));
-        fallbackAdded = surfaces.length > 0;
-      }
+      lastUnblockedPageResult = pageResult;
 
       if (pageResult.blocked || current.depth >= depthLimit || result.pages.length >= pageLimit) continue;
 
       const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")]
-        .map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim() }))
-        .filter((entry) => entry.href)).catch((error) => {
+        .map((a) => {
+          const rect = a.getBoundingClientRect();
+          const style = getComputedStyle(a);
+          const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+          return {
+            href: a.href,
+            text: (a.innerText || a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim(),
+            visible,
+            inHeader: !!a.closest("header,[role='banner'],nav,[role='navigation']"),
+          };
+        })
+        .filter((entry) => entry.href && entry.visible)).catch((error) => {
           pageResult.limitations.push(`Link extraction failed after audit: ${error.message}`);
           return [];
         });
@@ -231,6 +246,10 @@ async function crawlAndAuditProgressively(context) {
         }
       }
 
+    }
+    if (fallbackSurfaces && lastUnblockedPageResult && maxFallbackSurfaces > 0 && result.pages.length < pageLimit) {
+      const surfaces = await auditFallbackSurfaces(page, lastUnblockedPageResult, result.pages.length + 1);
+      result.pages.push(...surfaces.slice(0, Math.max(0, pageLimit - result.pages.length)));
     }
     if (attempted >= maxCandidates && result.pages.length < pageLimit) {
       result.limitations.push(`Stopped after ${maxCandidates} navigation candidates before reaching ${pageLimit} unblocked pages.`);
@@ -359,16 +378,25 @@ async function auditSurface(page, surface, label) {
 }
 
 async function recoverToSourceAfterBlockedNavigation(page, sourceUrl, pageResult) {
-  if (!sourceUrl || !/^https?:\/\//.test(sourceUrl)) return;
+  if (!sourceUrl || !/^https?:\/\//.test(sourceUrl)) return false;
   const before = page.url();
   await page.goBack({ waitUntil: "domcontentloaded", timeout: 30000 }).catch((error) => {
     pageResult.limitations.push(`Could not go back after blocked navigation from ${before}: ${error.message}`);
     return null;
   });
   await humanPause(initialSettleMs);
+  if (safeCurrentUrl(page) === normalizeUrl(sourceUrl) && !await isBlocked(page)) return true;
   if (safeCurrentUrl(page) !== normalizeUrl(sourceUrl)) {
     pageResult.limitations.push(`Back navigation did not restore source page ${sourceUrl}; current page is ${page.url()}.`);
+    await pacedDelay();
+    await page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 60000 }).catch((error) => {
+      pageResult.limitations.push(`Source reload failed after blocked navigation: ${error.message}`);
+      return null;
+    });
+    await humanPause(initialSettleMs);
+    await dismissCommonOverlays(page);
   }
+  return safeCurrentUrl(page) === normalizeUrl(sourceUrl) && !await isBlocked(page);
 }
 
 async function auditPage(page, target, label, options = {}) {
@@ -392,6 +420,13 @@ async function auditPage(page, target, label, options = {}) {
 
   try {
     const response = options.skipNavigation ? null : await navigateForAudit(page, target, pageResult);
+    if (pageResult.navigationSkipped) {
+      pageResult.finalUrl = page.url();
+      pageResult.title = await page.title().catch(() => null);
+      pageResult.blocked = true;
+      pageResult.limitations.push("Navigation candidate skipped without direct URL fallback.");
+      return pageResult;
+    }
     pageResult.status = response?.status() || null;
     await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {
       pageResult.limitations.push("networkidle timeout; continued with loaded DOM.");
@@ -484,6 +519,11 @@ async function navigateForAudit(page, target, pageResult) {
   if (targetUrl !== normalizeUrl(seedUrl)) {
     const reachedByClick = await navigateByVisibleLink(page, target, pageResult);
     if (reachedByClick) return reachedByClick;
+    if (target.depth > 0) {
+      pageResult.navigationSkipped = true;
+      pageResult.navigationMode = "no-visible-link-skip";
+      return null;
+    }
   }
 
   await pacedDelay();
@@ -509,9 +549,33 @@ async function navigateByVisibleLink(page, target, pageResult) {
   }
 
   const targetUrl = normalizeUrl(target.url);
+  const targetParsed = new URL(targetUrl);
+  const hrefCandidates = [
+    `a[href="${cssEscape(targetParsed.pathname)}"]`,
+    `a[href="${cssEscape(targetParsed.pathname + targetParsed.search)}"]`,
+    `a[href="${cssEscape(targetUrl)}"]`,
+  ];
+  for (const selector of hrefCandidates) {
+    const visibleCandidate = page.locator(selector).filter({ visible: true });
+    const visibleCount = await visibleCandidate.count().catch(() => 0);
+    if (visibleCount === 1) {
+      const linkText = await visibleCandidate.innerText({ timeout: 1000 }).catch(() => target.text || "");
+      await visibleCandidate.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+      await humanPause(interactionDelayMs);
+      const responsePromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => null);
+      await visibleCandidate.click({ timeout: 5000 }).catch(() => null);
+      const response = await responsePromise;
+      await humanPause(initialSettleMs);
+      pageResult.navigationMode = "visible-link-click";
+      pageResult.clickedLinkText = linkText;
+      return response;
+    }
+  }
+
   const count = await page.locator("a[href]").count().catch(() => 0);
   for (let index = 0; index < count; index += 1) {
     const candidate = page.locator("a[href]").nth(index);
+    if (!await candidate.isVisible().catch(() => false)) continue;
     const href = await candidate.evaluate((el) => el.href).catch(() => "");
     if (!href || normalizeUrl(href) !== targetUrl) continue;
     const linkText = await candidate.innerText({ timeout: 1000 }).catch(() => target.text || "");
@@ -1070,15 +1134,23 @@ function prioritizeLinks(links) {
     .map((entry) => {
       const text = `${entry.href} ${entry.text}`.toLowerCase();
       const score = [
-        /product|category|shop|catalog|detail/.test(text) ? 30 : 0,
-        /support|contact|help|service|faq/.test(text) ? 25 : 0,
-        /about|blog|article|news|sustain/.test(text) ? 15 : 0,
+        entry.inHeader ? 30 : 0,
+        /\/beyaz-esya$|\/buzdolabi$|\/camasir-makinesi$|\/bulasik-makinesi$|\/kurutma-makinesi$|\/klima$|\/televizyon$|\/ankastre$|\/kucuk-ev-aletleri$/.test(text) ? 70 : 0,
+        /beyaz eşya|beyaz-esya|buzdolabi|buzdolabı|çamaşır|camasir|kurutma|bulaşık|bulasik|klima|televizyon|ankastre|kucuk-ev-aletleri|süpürge|supurge|kategori|urun|ürün/.test(text) ? 45 : 0,
+        /product|category|shop|catalog|detail/.test(text) ? 35 : 0,
+        /destek|servis|magaza|mağaza|support|contact|help|service|faq/.test(text) ? 25 : 0,
+        /teknoloji|kampanya|about|article|news|sustain/.test(text) ? 15 : 0,
+        /detayı için|detayi icin|blog|e-ticaret|hesabim|logout|uye-ol|sepetim|favorilerim/.test(text) ? -50 : 0,
         entry.text && entry.text.length > 2 ? 5 : 0,
       ].reduce((a, b) => a + b, 0);
       return { ...entry, score };
     })
     .sort((a, b) => b.score - a.score || a.href.localeCompare(b.href));
   return uniqueBy(scored, (entry) => normalizeUrl(entry.href));
+}
+
+function cssEscape(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function isAllowedUrl(url) {
