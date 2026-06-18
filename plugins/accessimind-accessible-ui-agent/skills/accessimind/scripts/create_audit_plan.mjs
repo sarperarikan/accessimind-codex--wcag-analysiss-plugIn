@@ -59,6 +59,7 @@ const plan = {
     maxRequestsPerMinute: Number(args.maxRequestsPerMinute || 12),
     maxConcurrency: 1,
     humanNavigation: args.humanNavigation !== "false",
+    autoAccessProfile: args.autoAccessProfile !== "false",
     cdpUrl: args.cdpUrl || "",
     userDataDir: args.userDataDir || "",
     auditCurrentPage: args.auditCurrentPage === "true",

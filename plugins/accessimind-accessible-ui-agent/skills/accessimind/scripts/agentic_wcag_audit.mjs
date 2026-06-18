@@ -26,6 +26,8 @@ const maxRequestsPerMinute = Number(args.maxRequestsPerMinute || auditPlan?.safe
 const humanNavigation = args.humanNavigation !== "false";
 const cdpUrl = args.cdpUrl || auditPlan?.safeBrowsing?.cdpUrl || "";
 const userDataDir = args.userDataDir || auditPlan?.safeBrowsing?.userDataDir || "";
+const autoAccessProfile = args.autoAccessProfile === "true" || auditPlan?.safeBrowsing?.autoAccessProfile === true || (!headless && humanNavigation);
+const effectiveUserDataDir = userDataDir || (autoAccessProfile ? path.join(outDir, ".accessimind-browser-profile") : "");
 const auditCurrentPage = args.auditCurrentPage === "true";
 const manualHandoffOnBlock = args.manualHandoffOnBlock === "true" || auditPlan?.safeBrowsing?.manualHandoffOnBlock === true;
 const manualTimeoutMs = Number(args.manualTimeoutMs || auditPlan?.safeBrowsing?.manualTimeoutMs || 180000);
@@ -56,7 +58,9 @@ const result = {
     initialSettleMs,
     maxRequestsPerMinute,
     humanNavigation,
-    browserConnection: cdpUrl ? "cdp" : userDataDir ? "persistent-profile" : "managed-playwright",
+    autoAccessProfile,
+    browserConnection: cdpUrl ? "cdp" : effectiveUserDataDir ? "persistent-profile" : "managed-playwright",
+    userDataDir: effectiveUserDataDir || null,
     auditCurrentPage,
     manualHandoffOnBlock,
     manualTimeoutMs,
@@ -654,8 +658,9 @@ async function createBrowserRuntime() {
     };
   }
 
-  if (userDataDir) {
-    const context = await chromium.launchPersistentContext(path.resolve(userDataDir), {
+  if (effectiveUserDataDir) {
+    fs.mkdirSync(path.resolve(effectiveUserDataDir), { recursive: true });
+    const context = await chromium.launchPersistentContext(path.resolve(effectiveUserDataDir), {
       channel: browserChannel,
       headless: false,
       locale,
@@ -770,7 +775,7 @@ function normalizeUrl(url) {
   const parsed = new URL(url);
   parsed.hash = "";
   parsed.search = "";
-  return parsed.toString().replace(/\/$/, "");
+  return parsed.toString();
 }
 
 function safeSlug(value) {
