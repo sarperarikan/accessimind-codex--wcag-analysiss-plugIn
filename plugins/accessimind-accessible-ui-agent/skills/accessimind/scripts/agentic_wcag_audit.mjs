@@ -25,6 +25,7 @@ const seed = new URL(seedUrl);
 const sameOriginOnly = args.sameOrigin !== "false";
 const pathPrefix = args.pathPrefix || auditPlan?.scope?.pathPrefix || seed.pathname.replace(/\/[^/]*$/, "/");
 const explicitUrls = auditPlan?.scope?.urls || [];
+let lastRequestAt = 0;
 
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -459,7 +460,6 @@ async function launchBrowser() {
   }
 }
 
-let lastRequestAt = 0;
 async function pacedDelay() {
   const minimumGap = Math.max(pacingMs, Math.ceil(60000 / Math.max(1, maxRequestsPerMinute)));
   const elapsed = Date.now() - lastRequestAt;
