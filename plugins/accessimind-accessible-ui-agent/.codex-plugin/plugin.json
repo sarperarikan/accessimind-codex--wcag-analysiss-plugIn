@@ -1,0 +1,28 @@
+{
+  "name": "accessimind-accessible-ui-agent",
+  "version": "0.1.0+codex.20260618071751",
+  "description": "Evidence-backed WCAG 2.2 UI, Codex plugin UI, and agentic screen-reader audit workflows.",
+  "author": {
+    "name": "AccessiMind"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AccessiMind Accessible UI Agent",
+    "shortDescription": "WCAG audits, plugin UI gates, keyboard checks, NVDA evidence, and accessible UI implementation.",
+    "longDescription": "AccessiMind Accessible UI Agent helps Codex produce production-ready accessible web UI, Codex plugin UI accessibility gates, WCAG 2.2 reviews, evidence-backed HTML reports, keyboard and focus analysis, real screen-reader evidence, agentic NVDA navigation, and Jira-ready remediation tasks. Invoke the bundled skill with $accessimind.",
+    "developerName": "AccessiMind",
+    "category": "Productivity",
+    "capabilities": [
+      "Accessibility",
+      "Reporting",
+      "Implementation",
+      "Screen Reader",
+      "Plugin UI"
+    ],
+    "defaultPrompt": [
+      "Audit this page with AccessiMind.",
+      "Create a WCAG HTML report.",
+      "Test this flow with a screen reader."
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AccessiMind Accessible UI Agent Skill"
+  short_description: "WCAG 2.2 UI, plugin UI gates, NVDA evidence, and agentic screen-reader audits"
+  default_prompt: "Use $accessimind to audit or improve UI with WCAG 2.2 coverage, plugin UI accessibility gates, real screen-reader evidence, agentic NVDA navigation, multilingual support, and platform-aware verification."

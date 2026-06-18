@@ -1,0 +1,20 @@
+{
+  "name": "accessimind-public",
+  "interface": {
+    "displayName": "AccessiMind Public"
+  },
+  "plugins": [
+    {
+      "name": "accessimind-accessible-ui-agent",
+      "source": {
+        "source": "local",
+        "path": "./plugins/accessimind-accessible-ui-agent"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
