@@ -65,6 +65,8 @@ const plan = {
     auditCurrentPage: args.auditCurrentPage === "true",
     manualHandoffOnBlock: args.manualHandoffOnBlock === "true",
     manualTimeoutMs: Number(args.manualTimeoutMs || 180000),
+    fallbackSurfaces: args.fallbackSurfaces !== "false",
+    maxFallbackSurfaces: Number(args.maxFallbackSurfaces || Math.max(pageLimit - 1, 0)),
     stopOnBlockPage: args.stopOnBlockPage !== "false",
   },
   environment: {

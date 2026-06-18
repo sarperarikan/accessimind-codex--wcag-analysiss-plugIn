@@ -21,6 +21,7 @@ AccessiMind is a general-purpose, agentic WCAG audit and accessibility implement
 - Uses progressive same-session navigation by default for live audits: slow initial settling, paced requests, visible-link clicks when possible, and direct URL fallback only when normal navigation cannot reach the page.
 - Supports authorized access continuity for protected sites through existing Chrome CDP sessions, persistent test profiles, current-page auditing, and manual handoff when a human must complete normal access.
 - Creates a dedicated persistent browser profile automatically for headed live audits, so the agent can maintain a stable test session without requiring the user to set up Chrome manually.
+- Falls back to in-page audit surfaces when route navigation is blocked: header, navigation, main content, carousel/hero, card grids, and footer are audited as evidence-bearing surfaces instead of stopping at `403`.
 
 ## Install
 
@@ -110,6 +111,7 @@ For protected production sites, use an authorized access source instead of tryin
 - `--autoAccessProfile true` creates and reuses an output-local dedicated test profile automatically.
 - `--auditCurrentPage true` audits the currently open authorized page instead of reloading it.
 - `--manualHandoffOnBlock true` waits in a visible browser when normal access requires a human step, then audits the page only after it is reachable.
+- `--fallbackSurfaces true` keeps collecting findings from reachable in-page surfaces when additional routes are blocked.
 
 The detailed policy is bundled at:
 

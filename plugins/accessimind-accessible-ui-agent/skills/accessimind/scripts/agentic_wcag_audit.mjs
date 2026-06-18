@@ -31,6 +31,8 @@ const effectiveUserDataDir = userDataDir || (autoAccessProfile ? path.join(outDi
 const auditCurrentPage = args.auditCurrentPage === "true";
 const manualHandoffOnBlock = args.manualHandoffOnBlock === "true" || auditPlan?.safeBrowsing?.manualHandoffOnBlock === true;
 const manualTimeoutMs = Number(args.manualTimeoutMs || auditPlan?.safeBrowsing?.manualTimeoutMs || 180000);
+const fallbackSurfaces = args.fallbackSurfaces !== "false" && auditPlan?.safeBrowsing?.fallbackSurfaces !== false;
+const maxFallbackSurfaces = Number(args.maxFallbackSurfaces || auditPlan?.safeBrowsing?.maxFallbackSurfaces || Math.max(pageLimit - 1, 0));
 const runId = `agentic-wcag-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 const seed = new URL(seedUrl);
 const sameOriginOnly = args.sameOrigin !== "false";
@@ -64,6 +66,8 @@ const result = {
     auditCurrentPage,
     manualHandoffOnBlock,
     manualTimeoutMs,
+    fallbackSurfaces,
+    maxFallbackSurfaces,
     auditPlan: auditPlanPath,
     wafSafeMode: true,
   },
@@ -182,6 +186,7 @@ async function crawlAndAuditProgressively(context) {
   const seen = new Set();
   const page = await context.newPage();
   let attempted = 0;
+  let fallbackAdded = false;
 
   try {
     while (queue.length && result.pages.length < pageLimit && attempted < maxCandidates) {
@@ -204,6 +209,12 @@ async function crawlAndAuditProgressively(context) {
 
       result.pages.push(pageResult);
 
+      if (!pageResult.blocked && fallbackSurfaces && !fallbackAdded && maxFallbackSurfaces > 0 && result.pages.length < pageLimit) {
+        const surfaces = await auditFallbackSurfaces(page, pageResult, result.pages.length + 1);
+        result.pages.push(...surfaces.slice(0, Math.max(0, pageLimit - result.pages.length)));
+        fallbackAdded = surfaces.length > 0;
+      }
+
       if (pageResult.blocked || current.depth >= depthLimit || result.pages.length >= pageLimit) continue;
 
       const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")]
@@ -219,6 +230,7 @@ async function crawlAndAuditProgressively(context) {
           queue.push({ url: normalized, depth: current.depth + 1, source: page.url(), text: link.text });
         }
       }
+
     }
     if (attempted >= maxCandidates && result.pages.length < pageLimit) {
       result.limitations.push(`Stopped after ${maxCandidates} navigation candidates before reaching ${pageLimit} unblocked pages.`);
@@ -226,6 +238,124 @@ async function crawlAndAuditProgressively(context) {
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+async function auditFallbackSurfaces(page, sourcePageResult, startIndex) {
+  const surfaces = await discoverFallbackSurfaces(page).catch((error) => {
+    sourcePageResult.limitations.push(`Fallback surface discovery failed: ${error.message}`);
+    return [];
+  });
+  const surfaceResults = [];
+  for (let index = 0; index < Math.min(surfaces.length, maxFallbackSurfaces); index += 1) {
+    const surface = surfaces[index];
+    const label = `${String(startIndex + index).padStart(2, "0")}-${safeSlug(surface.id)}`;
+    const surfaceResult = await auditSurface(page, surface, label);
+    surfaceResults.push(surfaceResult);
+  }
+  if (surfaceResults.length) {
+    result.limitations.push(`Used ${surfaceResults.length} in-page fallback audit surface(s) because route navigation candidates were blocked or insufficient.`);
+  }
+  return surfaceResults;
+}
+
+async function discoverFallbackSurfaces(page) {
+  return page.evaluate(() => {
+    const candidates = [
+      ["header", "site-header", "header,[role='banner']"],
+      ["navigation", "primary-navigation", "nav,[role='navigation']"],
+      ["main", "main-content", "main,[role='main']"],
+      ["hero", "hero-or-slider", "[class*='hero' i],[class*='slider' i],[class*='swiper' i],[aria-roledescription*='carousel' i]"],
+      ["cards", "card-grid", "[class*='card' i],[class*='product' i],[class*='category' i]"],
+      ["footer", "site-footer", "footer,[role='contentinfo']"],
+    ];
+    const seen = new Set();
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    return candidates.flatMap(([kind, fallbackId, selector]) => [...document.querySelectorAll(selector)]
+      .filter(visible)
+      .slice(0, 3)
+      .map((el, index) => {
+        if (!el.dataset.accessimindSurfaceId) {
+          el.dataset.accessimindSurfaceId = `${fallbackId}-${index + 1}`;
+        }
+        const id = el.dataset.accessimindSurfaceId;
+        if (seen.has(id)) return null;
+        seen.add(id);
+        const rect = el.getBoundingClientRect();
+        const name = (el.getAttribute("aria-label") || el.getAttribute("aria-labelledby") || el.querySelector("h1,h2,h3")?.textContent || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120);
+        return {
+          kind,
+          id,
+          selector: `[data-accessimind-surface-id="${CSS.escape(id)}"]`,
+          name: name || kind,
+          rect: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        };
+      })
+      .filter(Boolean));
+  });
+}
+
+async function auditSurface(page, surface, label) {
+  const surfaceResult = {
+    kind: "in-page-surface",
+    source: page.url(),
+    url: `${page.url()}#${surface.id}`,
+    surface,
+    startedAt: new Date().toISOString(),
+    finalUrl: page.url(),
+    title: await page.title().catch(() => null),
+    status: null,
+    blocked: false,
+    screenshot: null,
+    axe: null,
+    dom: null,
+    keyboard: null,
+    contrast: null,
+    focus: null,
+    targetSize: null,
+    mobile: null,
+    limitations: ["In-page fallback surface: route-level page navigation was unavailable or insufficient."],
+  };
+  try {
+    const locator = page.locator(surface.selector).first();
+    await locator.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await humanPause(interactionDelayMs);
+    const screenshotPath = path.join(outDir, `${label}.png`);
+    await locator.screenshot({ path: screenshotPath }).catch(async (error) => {
+      surfaceResult.limitations.push(`Surface screenshot failed: ${error.message}`);
+      await page.screenshot({ path: screenshotPath, fullPage: false }).catch(() => {});
+    });
+    surfaceResult.screenshot = fs.existsSync(screenshotPath) ? screenshotPath : null;
+    await page.addScriptTag({ content: axe.source }).catch(() => {});
+    surfaceResult.axe = await page.evaluate(async (selector) => {
+      const root = document.querySelector(selector);
+      if (!root) return { error: `Surface not found: ${selector}` };
+      return axe.run(root, {
+        runOnly: {
+          type: "tag",
+          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"],
+        },
+      });
+    }, surface.selector).catch((error) => ({ error: error.message }));
+    surfaceResult.dom = await collectSurfaceDom(page, surface.selector);
+    surfaceResult.keyboard = await collectSurfaceKeyboard(page, surface.selector, Math.min(20, Number(args.tabSteps || 80)));
+    surfaceResult.contrast = await collectSurfaceContrast(page, surface.selector);
+    surfaceResult.focus = await collectSurfaceFocusMeasurements(page, surface.selector);
+    surfaceResult.targetSize = await collectSurfaceTargetSizes(page, surface.selector);
+  } catch (error) {
+    surfaceResult.error = error?.stack || error?.message || String(error);
+  } finally {
+    surfaceResult.finishedAt = new Date().toISOString();
+  }
+  return surfaceResult;
 }
 
 async function recoverToSourceAfterBlockedNavigation(page, sourceUrl, pageResult) {
@@ -449,6 +579,54 @@ async function collectDom(page) {
   });
 }
 
+async function collectSurfaceDom(page, selector) {
+  return page.evaluate((rootSelector) => {
+    const root = document.querySelector(rootSelector);
+    if (!root) return { error: `Surface not found: ${rootSelector}` };
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const text = (el) => (el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") || el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    const compact = (el) => ({
+      tag: el.tagName.toLowerCase(),
+      id: el.id || null,
+      role: el.getAttribute("role"),
+      name: text(el).slice(0, 180),
+      ariaHidden: el.getAttribute("aria-hidden"),
+      tabindex: el.getAttribute("tabindex"),
+      href: el.getAttribute("href"),
+    });
+    const all = [root, ...root.querySelectorAll("*")];
+    const headings = [...root.querySelectorAll("h1,h2,h3,h4,h5,h6,[role='heading']")].filter(visible).map(compact);
+    const links = [...root.querySelectorAll("a[href],[role='link']")].filter(visible).map(compact);
+    const buttons = [...root.querySelectorAll("button,[role='button'],input[type='button'],input[type='submit'],input[type='reset']")].filter(visible).map(compact);
+    const fields = [...root.querySelectorAll("input:not([type='hidden']),select,textarea,[role='textbox'],[role='combobox']")].filter(visible).map(compact);
+    const images = [...root.querySelectorAll("img,svg,[role='img']")].filter(visible).map(compact);
+    const duplicateIds = Object.entries(all.reduce((acc, el) => {
+      if (el.id) acc[el.id] = (acc[el.id] || 0) + 1;
+      return acc;
+    }, {})).filter(([, count]) => count > 1).map(([id, count]) => ({ id, count }));
+    const focusableHidden = [...root.querySelectorAll("[aria-hidden='true'] a[href],[aria-hidden='true'] button,[aria-hidden='true'] input,[aria-hidden='true'] [tabindex]:not([tabindex='-1'])")].map(compact);
+    const genericLinks = links.filter((entry) => /^(learn more|view more|view all|shop now|buy now|details|read more|see all|discover|more)$/i.test(entry.name));
+    const missingImageNames = images.filter((entry) => !entry.name);
+    return {
+      scoped: true,
+      selector: rootSelector,
+      headings,
+      links,
+      buttons,
+      fields,
+      images,
+      duplicateIds: duplicateIds.slice(0, 60),
+      focusableHidden: focusableHidden.slice(0, 60),
+      genericLinks: genericLinks.slice(0, 80),
+      missingImageNames: missingImageNames.slice(0, 80),
+    };
+  }, selector);
+}
+
 async function collectKeyboard(page, count) {
   const steps = [];
   await page.keyboard.press("Home").catch(() => {});
@@ -484,6 +662,49 @@ async function collectKeyboard(page, count) {
     uniqueTargets,
     possibleTrap: uniqueTargets <= 2 || bodyFocusCount > count * 0.7,
     missingVisibleFocus: steps.filter((step) => !step.focusVisible && !step.activeIsBody).slice(0, 30),
+    steps,
+  };
+}
+
+async function collectSurfaceKeyboard(page, selector, count) {
+  await page.locator(selector).first().scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+  const steps = [];
+  for (let i = 1; i <= count; i += 1) {
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(120);
+    steps.push(await page.evaluate(({ step, rootSelector }) => {
+      const root = document.querySelector(rootSelector);
+      const el = document.activeElement;
+      const rect = el?.getBoundingClientRect?.();
+      const style = el ? getComputedStyle(el) : null;
+      const name = el ? (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.value || el.textContent || "").replace(/\s+/g, " ").trim() : "";
+      const outlineWidth = style ? parseFloat(style.outlineWidth || "0") : 0;
+      const boxShadow = style ? style.boxShadow : "none";
+      return {
+        step,
+        insideSurface: !!(root && el && root.contains(el)),
+        tag: el?.tagName?.toLowerCase() || null,
+        id: el?.id || null,
+        role: el?.getAttribute?.("role") || null,
+        name: name.slice(0, 160),
+        href: el?.getAttribute?.("href") || null,
+        rect: rect ? { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+        focusVisible: style ? outlineWidth > 0 || boxShadow !== "none" || style.outlineStyle !== "none" : false,
+        activeIsBody: el === document.body,
+      };
+    }, { step: i, rootSelector: selector }));
+  }
+  const insideSteps = steps.filter((step) => step.insideSurface);
+  const bodyFocusCount = steps.filter((step) => step.activeIsBody).length;
+  const uniqueTargets = new Set(steps.map((step) => `${step.tag}#${step.id}:${step.name}`)).size;
+  return {
+    scoped: true,
+    stepCount: count,
+    insideSurfaceSteps: insideSteps.length,
+    bodyFocusCount,
+    uniqueTargets,
+    possibleTrap: uniqueTargets <= 2 || bodyFocusCount > count * 0.7,
+    missingVisibleFocus: steps.filter((step) => step.insideSurface && !step.focusVisible && !step.activeIsBody).slice(0, 30),
     steps,
   };
 }
@@ -546,6 +767,66 @@ async function collectContrast(page) {
   });
 }
 
+async function collectSurfaceContrast(page, selector) {
+  return page.evaluate((rootSelector) => {
+    const root = document.querySelector(rootSelector);
+    if (!root) return [{ error: `Surface not found: ${rootSelector}` }];
+    const parse = (value) => {
+      const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+    };
+    const luminance = ([r, g, b]) => {
+      const values = [r, g, b].map((channel) => {
+        const c = channel / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2];
+    };
+    const ratio = (fg, bg) => {
+      const l1 = luminance(fg);
+      const l2 = luminance(bg);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+    const bgOf = (el) => {
+      let current = el;
+      while (current && current !== document.documentElement) {
+        const bg = getComputedStyle(current).backgroundColor;
+        if (bg && !/rgba\(\s*0,\s*0,\s*0,\s*0\s*\)|transparent/.test(bg)) return bg;
+        current = current.parentElement;
+      }
+      return "rgb(255, 255, 255)";
+    };
+    return [...root.querySelectorAll("*")]
+      .filter((el) => {
+        const rect = el.getBoundingClientRect();
+        const text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        return text.length >= 3 && rect.width > 0 && rect.height > 0 && getComputedStyle(el).display !== "none";
+      })
+      .slice(0, 250)
+      .map((el) => {
+        const style = getComputedStyle(el);
+        const fg = parse(style.color);
+        const bg = parse(bgOf(el));
+        if (!fg || !bg) return null;
+        const value = ratio(fg, bg);
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || null,
+          className: String(el.className || "").slice(0, 100),
+          text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140),
+          fontSize: style.fontSize,
+          color: style.color,
+          backgroundColor: bgOf(el),
+          ratio: Math.round(value * 100) / 100,
+          failsNormalText: value < 4.5,
+        };
+      })
+      .filter(Boolean)
+      .filter((entry) => entry.failsNormalText)
+      .slice(0, 50);
+  }, selector);
+}
+
 async function collectFocusMeasurements(page) {
   return page.evaluate(() => [...document.querySelectorAll("a[href],button,input,select,textarea,[tabindex]:not([tabindex='-1']),[role='button'],[role='link']")]
     .slice(0, 120)
@@ -570,6 +851,34 @@ async function collectFocusMeasurements(page) {
     .filter((entry) => entry.visible));
 }
 
+async function collectSurfaceFocusMeasurements(page, selector) {
+  return page.evaluate((rootSelector) => {
+    const root = document.querySelector(rootSelector);
+    if (!root) return [{ error: `Surface not found: ${rootSelector}` }];
+    return [...root.querySelectorAll("a[href],button,input,select,textarea,[tabindex]:not([tabindex='-1']),[role='button'],[role='link']")]
+      .slice(0, 80)
+      .map((el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        const name = (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.value || el.textContent || "").replace(/\s+/g, " ").trim();
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || null,
+          role: el.getAttribute("role"),
+          name: name.slice(0, 120),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          outlineWidth: style.outlineWidth,
+          outlineStyle: style.outlineStyle,
+          outlineColor: style.outlineColor,
+          boxShadow: style.boxShadow,
+          visible: rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none",
+        };
+      })
+      .filter((entry) => entry.visible);
+  }, selector);
+}
+
 async function collectTargetSizes(page) {
   return page.evaluate(() => [...document.querySelectorAll("a[href],button,input,select,textarea,[role='button'],[role='link'],[tabindex]:not([tabindex='-1'])")]
     .map((el) => {
@@ -588,6 +897,30 @@ async function collectTargetSizes(page) {
     })
     .filter((entry) => entry.visible && (entry.width < 24 || entry.height < 24))
     .slice(0, 100));
+}
+
+async function collectSurfaceTargetSizes(page, selector) {
+  return page.evaluate((rootSelector) => {
+    const root = document.querySelector(rootSelector);
+    if (!root) return [{ error: `Surface not found: ${rootSelector}` }];
+    return [...root.querySelectorAll("a[href],button,input,select,textarea,[role='button'],[role='link'],[tabindex]:not([tabindex='-1'])")]
+      .map((el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        const name = (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.value || el.textContent || "").replace(/\s+/g, " ").trim();
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || null,
+          role: el.getAttribute("role"),
+          name: name.slice(0, 120),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          visible: rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none",
+        };
+      })
+      .filter((entry) => entry.visible && (entry.width < 24 || entry.height < 24))
+      .slice(0, 80);
+  }, selector);
 }
 
 async function collectMobileReflow(page, url, label) {
