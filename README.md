@@ -18,6 +18,7 @@ AccessiMind is a general-purpose, agentic WCAG audit and accessibility implement
 - Produces Jira-ready remediation tasks, acceptance criteria, and regression packs.
 - Supports accessibility implementation and review for React, HTML, CSS, JavaScript, Codex plugin UI, and live web pages.
 - Uses an authorized, low-impact browsing policy for protected production targets; it reports WAF, CAPTCHA, login, and rate-limit blocks as limitations instead of attempting bypass.
+- Uses progressive same-session navigation by default for live audits: slow initial settling, paced requests, visible-link clicks when possible, and direct URL fallback only when normal navigation cannot reach the page.
 
 ## Install
 
@@ -98,7 +99,7 @@ Recommended generic sequence:
 
 ## Authorized Browsing Policy
 
-Protected live targets must be tested only with authorization. The plugin defaults to same-origin scope, low concurrency, pacing, and stop-on-block behavior. It does not include WAF evasion, CAPTCHA bypass, stealth plugins, proxy rotation, browser fingerprint rotation, destructive form submission, account creation, purchasing, or credential attacks.
+Protected live targets must be tested only with authorization. The plugin defaults to same-origin scope, low concurrency, slow pacing, same-session navigation, visible-link clicks when possible, and stop-on-block behavior. It does not include WAF evasion, CAPTCHA bypass, stealth plugins, proxy rotation, browser fingerprint rotation, destructive form submission, account creation, purchasing, or credential attacks.
 
 The detailed policy is bundled at:
 

@@ -15,11 +15,15 @@ const auditPlan = auditPlanPath && fs.existsSync(auditPlanPath) ? JSON.parse(fs.
 const outDir = path.resolve(args.outDir || path.join("reports", safeSlug(new URL(seedUrl).hostname)));
 const pageLimit = Number(args.pages || auditPlan?.scope?.pageLimit || 10);
 const depthLimit = Number(args.depth || auditPlan?.scope?.depthLimit || 1);
+const maxCandidates = Number(args.maxCandidates || auditPlan?.scope?.maxCandidates || Math.max(pageLimit * 6, 12));
 const locale = args.locale || auditPlan?.environment?.locale || "en-US";
 const browserChannel = args.channel || "chrome";
 const headless = args.headless === "true";
-const pacingMs = Number(args.pacingMs || auditPlan?.safeBrowsing?.pacingMs || 1200);
-const maxRequestsPerMinute = Number(args.maxRequestsPerMinute || auditPlan?.safeBrowsing?.maxRequestsPerMinute || 20);
+const pacingMs = Number(args.pacingMs || auditPlan?.safeBrowsing?.pacingMs || 3000);
+const interactionDelayMs = Number(args.interactionDelayMs || auditPlan?.safeBrowsing?.interactionDelayMs || 450);
+const initialSettleMs = Number(args.initialSettleMs || auditPlan?.safeBrowsing?.initialSettleMs || 5000);
+const maxRequestsPerMinute = Number(args.maxRequestsPerMinute || auditPlan?.safeBrowsing?.maxRequestsPerMinute || 12);
+const humanNavigation = args.humanNavigation !== "false";
 const runId = `agentic-wcag-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 const seed = new URL(seedUrl);
 const sameOriginOnly = args.sameOrigin !== "false";
@@ -36,13 +40,17 @@ const result = {
   options: {
     pageLimit,
     depthLimit,
+    maxCandidates,
     locale,
     browserChannel,
     headless,
     sameOriginOnly,
     pathPrefix,
     pacingMs,
+    interactionDelayMs,
+    initialSettleMs,
     maxRequestsPerMinute,
+    humanNavigation,
     auditPlan: auditPlanPath,
     wafSafeMode: true,
   },
@@ -55,6 +63,7 @@ const result = {
     wafEvasionAllowed: false,
   },
   selectedUrls: [],
+  blockedCandidates: [],
   pages: [],
   limitations: [],
 };
@@ -68,14 +77,18 @@ try {
     viewport: { width: 1440, height: 1000 },
   });
 
-  const selected = await crawlUrls(context);
-  result.selectedUrls = selected;
+  if (humanNavigation && explicitUrls.length === 0) {
+    await crawlAndAuditProgressively(context);
+  } else {
+    const selected = await crawlUrls(context);
+    result.selectedUrls = selected;
 
-  for (let index = 0; index < selected.length; index += 1) {
-    const page = await context.newPage();
-    const label = `${String(index + 1).padStart(2, "0")}-${safeSlug(new URL(selected[index].url).pathname || "home") || "home"}`;
-    result.pages.push(await auditPage(page, selected[index], label));
-    await page.close().catch(() => {});
+    const auditPageHandle = await context.newPage();
+    for (let index = 0; index < selected.length; index += 1) {
+      const label = `${String(index + 1).padStart(2, "0")}-${safeSlug(new URL(selected[index].url).pathname || "home") || "home"}`;
+      result.pages.push(await auditPage(auditPageHandle, selected[index], label));
+    }
+    await auditPageHandle.close().catch(() => {});
   }
 
   result.finishedAt = new Date().toISOString();
@@ -111,6 +124,7 @@ async function crawlUrls(context) {
     try {
       await pacedDelay();
       await page.goto(current.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await humanPause(initialSettleMs);
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
       await dismissCommonOverlays(page);
       const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")]
@@ -130,6 +144,70 @@ async function crawlUrls(context) {
   }
 
   return selected;
+}
+
+async function crawlAndAuditProgressively(context) {
+  const queue = [{ url: normalizeUrl(seedUrl), depth: 0, source: "seed" }];
+  const seen = new Set();
+  const page = await context.newPage();
+  let attempted = 0;
+
+  try {
+    while (queue.length && result.pages.length < pageLimit && attempted < maxCandidates) {
+      const current = queue.shift();
+      if (!current || seen.has(current.url)) continue;
+      seen.add(current.url);
+      if (!isAllowedUrl(current.url)) continue;
+      attempted += 1;
+
+      const target = { kind: current.depth === 0 ? "seed" : "discovered", ...current };
+      result.selectedUrls.push(target);
+      const label = `${String(attempted).padStart(2, "0")}-${safeSlug(new URL(target.url).pathname || "home") || "home"}`;
+      const pageResult = await auditPage(page, target, label);
+
+      if (pageResult.blocked && current.depth > 0) {
+        result.blockedCandidates.push(pageResult);
+        await recoverToSourceAfterBlockedNavigation(page, current.source, pageResult);
+        continue;
+      }
+
+      result.pages.push(pageResult);
+
+      if (pageResult.blocked || current.depth >= depthLimit || result.pages.length >= pageLimit) continue;
+
+      const links = await page.evaluate(() => [...document.querySelectorAll("a[href]")]
+        .map((a) => ({ href: a.href, text: (a.innerText || a.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim() }))
+        .filter((entry) => entry.href)).catch((error) => {
+          pageResult.limitations.push(`Link extraction failed after audit: ${error.message}`);
+          return [];
+        });
+
+      for (const link of prioritizeLinks(links)) {
+        const normalized = normalizeUrl(link.href);
+        if (!seen.has(normalized) && isAllowedUrl(normalized)) {
+          queue.push({ url: normalized, depth: current.depth + 1, source: page.url(), text: link.text });
+        }
+      }
+    }
+    if (attempted >= maxCandidates && result.pages.length < pageLimit) {
+      result.limitations.push(`Stopped after ${maxCandidates} navigation candidates before reaching ${pageLimit} unblocked pages.`);
+    }
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+async function recoverToSourceAfterBlockedNavigation(page, sourceUrl, pageResult) {
+  if (!sourceUrl || !/^https?:\/\//.test(sourceUrl)) return;
+  const before = page.url();
+  await page.goBack({ waitUntil: "domcontentloaded", timeout: 30000 }).catch((error) => {
+    pageResult.limitations.push(`Could not go back after blocked navigation from ${before}: ${error.message}`);
+    return null;
+  });
+  await humanPause(initialSettleMs);
+  if (safeCurrentUrl(page) !== normalizeUrl(sourceUrl)) {
+    pageResult.limitations.push(`Back navigation did not restore source page ${sourceUrl}; current page is ${page.url()}.`);
+  }
 }
 
 async function auditPage(page, target, label) {
@@ -152,8 +230,7 @@ async function auditPage(page, target, label) {
   };
 
   try {
-    await pacedDelay();
-    const response = await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    const response = await navigateForAudit(page, target, pageResult);
     pageResult.status = response?.status() || null;
     await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {
       pageResult.limitations.push("networkidle timeout; continued with loaded DOM.");
@@ -196,6 +273,72 @@ async function auditPage(page, target, label) {
   }
 
   return pageResult;
+}
+
+async function navigateForAudit(page, target, pageResult) {
+  if (!humanNavigation) {
+    await pacedDelay();
+    const response = await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await humanPause(initialSettleMs);
+    pageResult.navigationMode = "direct";
+    return response;
+  }
+
+  const targetUrl = normalizeUrl(target.url);
+  const currentUrl = safeCurrentUrl(page);
+  if (currentUrl === targetUrl) {
+    pageResult.navigationMode = "already-current";
+    await humanPause(initialSettleMs);
+    return null;
+  }
+
+  if (targetUrl !== normalizeUrl(seedUrl)) {
+    const reachedByClick = await navigateByVisibleLink(page, target, pageResult);
+    if (reachedByClick) return reachedByClick;
+  }
+
+  await pacedDelay();
+  const response = await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+  pageResult.navigationMode = targetUrl === normalizeUrl(seedUrl) ? "direct-seed" : "direct-fallback";
+  await humanPause(initialSettleMs);
+  return response;
+}
+
+async function navigateByVisibleLink(page, target, pageResult) {
+  const sourceUrl = target.source && /^https?:\/\//.test(target.source) ? target.source : seedUrl;
+  if (safeCurrentUrl(page) !== normalizeUrl(sourceUrl)) {
+    await pacedDelay();
+    const sourceResponse = await page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await humanPause(initialSettleMs);
+    await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    await dismissCommonOverlays(page);
+    if (await isBlocked(page)) {
+      pageResult.limitations.push(`Could not reach source page for link navigation: ${sourceUrl}`);
+      pageResult.sourceStatus = sourceResponse?.status() || null;
+      return null;
+    }
+  }
+
+  const targetUrl = normalizeUrl(target.url);
+  const count = await page.locator("a[href]").count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = page.locator("a[href]").nth(index);
+    const href = await candidate.evaluate((el) => el.href).catch(() => "");
+    if (!href || normalizeUrl(href) !== targetUrl) continue;
+    const linkText = await candidate.innerText({ timeout: 1000 }).catch(() => target.text || "");
+    await candidate.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await humanPause(interactionDelayMs);
+    const responsePromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => null);
+    await candidate.click({ timeout: 5000 }).catch(() => null);
+    const response = await responsePromise;
+    await humanPause(initialSettleMs);
+    pageResult.navigationMode = "visible-link-click";
+    pageResult.clickedLinkText = linkText;
+    return response;
+  }
+
+  pageResult.limitations.push(`No visible same-page link found for ${target.url}; direct fallback used.`);
+  return null;
 }
 
 async function collectDom(page) {
@@ -467,6 +610,18 @@ async function pacedDelay() {
     await new Promise((resolve) => setTimeout(resolve, minimumGap - elapsed));
   }
   lastRequestAt = Date.now();
+}
+
+async function humanPause(ms = interactionDelayMs) {
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function safeCurrentUrl(page) {
+  try {
+    return normalizeUrl(page.url());
+  } catch {
+    return "";
+  }
 }
 
 function prioritizeLinks(links) {

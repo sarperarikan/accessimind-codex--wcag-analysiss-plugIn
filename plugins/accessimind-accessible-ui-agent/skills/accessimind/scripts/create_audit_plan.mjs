@@ -32,6 +32,7 @@ const plan = {
     pathPrefix,
     pageLimit,
     depthLimit,
+    maxCandidates: Number(args.maxCandidates || Math.max(pageLimit * 6, 12)),
     urls: splitList(args.urls),
     priorityPageTypes: [
       "home",
@@ -52,9 +53,12 @@ const plan = {
     wafEvasionAllowed: false,
     captchaBypassAllowed: false,
     recommendedEnvironment: "staging, allowlisted test profile, or written authorization for production read-only audit",
-    pacingMs: Number(args.pacingMs || 1500),
-    maxRequestsPerMinute: Number(args.maxRequestsPerMinute || 20),
+    pacingMs: Number(args.pacingMs || 3000),
+    interactionDelayMs: Number(args.interactionDelayMs || 450),
+    initialSettleMs: Number(args.initialSettleMs || 5000),
+    maxRequestsPerMinute: Number(args.maxRequestsPerMinute || 12),
     maxConcurrency: 1,
+    humanNavigation: args.humanNavigation !== "false",
     stopOnBlockPage: args.stopOnBlockPage !== "false",
   },
   environment: {

@@ -1595,6 +1595,7 @@ When a live site uses CDN, WAF, bot protection, rate limiting, authentication, o
 - audit only targets that the user owns, operates, or is authorized to test
 - prefer staging, QA, allowlisted production test profiles, or documented read-only production windows
 - keep concurrency low and pace navigation and interactions with explicit delays and request budgets
+- prefer progressive same-session navigation: load the entry page, allow it to settle, discover links, click visible links when possible, and use direct URL loading only as a fallback
 - respect configured scope: same origin, path prefixes, page limits, depth limits, and user-provided URL lists
 - stop or mark evidence as blocked when a CAPTCHA, login wall, WAF block page, or rate-limit page appears
 - ask for a staging URL, allowlisted route, test credentials, or written authorization when production protection prevents evidence collection
@@ -3655,7 +3656,7 @@ For live-site audits, prefer the bundled generic scripts over site-specific one-
 Recommended generic live-site sequence:
 
 1. Generate `audit-plan.json` with `create_audit_plan.mjs`.
-2. Run `agentic_wcag_audit.mjs` with the plan and safe pacing defaults.
+2. Run `agentic_wcag_audit.mjs` with the plan and safe pacing defaults; for protected live sites, keep `humanNavigation` enabled and prefer headed mode.
 3. Add `agentic_task_runner.mjs` and `state_diff_audit.mjs` evidence for realistic expert workflows.
 4. Add NVDA, low-vision, and motor-access evidence when the environment supports it.
 5. Build `evidence-bundle.json` with `evidence_bundle_builder.mjs`.
